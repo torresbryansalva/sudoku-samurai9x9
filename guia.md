@@ -287,53 +287,6 @@ MAX_TIEMPO  = 120    # segundos
 
 ## 12. Ejemplo de Salida Esperada
 
-```
-==================================================
-  SUDOKU 9-TABLEROS  –  Búsqueda A*
-==================================================
-  Porcentaje relleno inicial : 15%
-  Semilla aleatoria          : 42
-  Límite nodos               : 200,000
-  Límite tiempo              : 120s
 
-  Celdas prellenadas         : 97 / 729
+falta poner una salida en termial 
 
-  [ ESTADO INICIAL ]
-  ...
-
-INICIANDO A*...
-
-==================================================
-✓  SOLUCIÓN ENCONTRADA
-==================================================
-  Nodos abiertos  : 1842
-  Nodos cerrados  : 9310
-  Backtracks      : 47
-  Profundidad     : 632
-  Tiempo          : 38.4s
-  Pasos de ruta   : 632
-  b* efectivo     : 1.0143
-
-  RUTA DE SOLUCIÓN (primeros 10 pasos)
-  Paso   1 | g=  1 | Tablero 0, fila 0, col 2  →  valor 3
-  ...
-```
-
----
-
-## 13. Checklist de Cumplimiento del Examen
-
-| Requisito (examen) | Estado |
-|---|---|
-| Estado como matriz 3D 9×9×9 | ✅ `Estado.grid[z][x][y]` |
-| Estado inicial aleatorio | ✅ `generar_estado_aleatorio()` |
-| Porcentaje configurable | ✅ parámetro `porcentaje_relleno` |
-| Detectar sin solución (estado inválido) | ✅ `es_consistente()` + frontera vacía |
-| Prueba de meta | ✅ `esta_resuelto()` |
-| Función sucesora | ✅ `aplicar_movimiento()` + `expandir()` |
-| Nodos abiertos y cerrados | ✅ `nodos_abiertos`, `nodos_cerrados`, `visitados` |
-| Criterios de finalización (tiempo/nodos/profundidad) | ✅ `max_tiempo`, `max_nodos`, `max_profundidad` |
-| Ruta: estado anterior → operador → estado nuevo | ✅ `_ruta()` + `Nodo.operador` |
-| Factor de ramificación efectivo b* | ✅ `_factor_ramificacion_efectivo()` |
-| Heurística admisible | ✅ suma de opciones válidas por celda |
-| Restricciones 3D entre tableros | ✅ `CONEXIONES` + propagación en espejos |

@@ -177,33 +177,33 @@ class Estado:
 # 2. GENERADOR DE ESTADO INICIAL ALEATORIO
 # =========================================================
 
-def generar_estado_aleatorio(porcentaje_relleno=0.20, semilla=None):
+def generar_estado_aleatorio(porcentaje_relleno=0.15, semilla=None):
     """
     Genera un estado inicial aleatorio con ~porcentaje_relleno de celdas
     prellenadas de forma válida.
- 
+
     Estrategia:
       1. Construye una lista de todas las celdas candidatas (excluye espejos
          para no contar doble) y la baraja.
       2. Recorre la lista en orden aleatorio e intenta colocar un valor válido
          en cada celda hasta alcanzar el objetivo.
       3. Si una celda ya fue rellenada por propagación de espejo, la salta.
- 
+
     Retorna (Estado, fijo) donde 'fijo' es el conjunto de celdas fijas.
     """
     if semilla is not None:
         random.seed(semilla)
- 
+
     estado = Estado()
     fijo   = set()   # (z, x, y) — incluye espejos
- 
+
     # ── 1. celdas candidatas: excluir las que son espejo de otra ────────────
     # Una celda (z,x,y) es "espejo" si existe otra celda que la apunta.
     # Para evitar contar doble, sólo consideramos la celda de menor índice
     # lexicográfico de cada par espejo.
     celdas_principales = []
     es_espejo_de_otra = set()
- 
+
     for z in range(9):
         for x in range(9):
             for y in range(9):
@@ -213,50 +213,52 @@ def generar_estado_aleatorio(porcentaje_relleno=0.20, semilla=None):
                         if vecino < (z, x, y):
                             es_espejo_de_otra.add((z, x, y))
                             break
- 
+
     for z in range(9):
         for x in range(9):
             for y in range(9):
                 if (z, x, y) not in es_espejo_de_otra:
                     celdas_principales.append((z, x, y))
- 
+
     # ── 2. barajar y seleccionar ─────────────────────────────────────────────
     random.shuffle(celdas_principales)
- 
+
     # cuántas celdas principales queremos rellenar
     # (el total real será mayor por los espejos propagados)
     objetivo = max(1, int(len(celdas_principales) * porcentaje_relleno))
     colocadas = 0
- 
+
     for (z, x, y) in celdas_principales:
         if colocadas >= objetivo:
             break
- 
+
         # ya rellenada por propagación de algún espejo anterior
         if estado.grid[z][x][y] != 0:
             fijo.add((z, x, y))
             colocadas += 1
             continue
- 
+
         # intentar un valor aleatorio válido
         vals = list(range(1, 10))
         random.shuffle(vals)
- 
+
         for v in vals:
             if estado.es_movimiento_valido(z, x, y, v):
                 estado.aplicar_movimiento(z, x, y, v)   # propaga espejos
                 fijo.add((z, x, y))
- 
+
                 # registrar también los espejos como fijos
                 if (z, x, y) in CONEXIONES:
                     for espejo in CONEXIONES[(z, x, y)]:
                         fijo.add(espejo)
- 
+
                 colocadas += 1
                 break
         # si ningún valor es válido para esta celda → simplemente la salta
- 
+
     return estado, fijo
+
+
 # =========================================================
 # 3. NODO A*
 # =========================================================
@@ -284,17 +286,16 @@ class Nodo:
     # --------------------------------------------------
 
     def heuristica(self):
-        score = 0
-        for z in range(9):
-            for x in range(9):
-                for y in range(9):
-                    if self.estado.grid[z][x][y] == 0:
-                        posibles = sum(
-                            1 for v in range(1, 10)
-                            if self.estado.es_movimiento_valido(z, x, y, v)
-                        )
-                        score += posibles
-        return score
+        # FIX 2: Contar celdas vacías — O(729), admisible y mucho más rápida.
+        # La versión anterior calculaba es_movimiento_valido 729×9 veces
+        # por nodo (≈6.561 llamadas costosas), haciendo el A* intratable.
+        return sum(
+            1
+            for z in range(9)
+            for x in range(9)
+            for y in range(9)
+            if self.estado.grid[z][x][y] == 0
+        )
 
     # --------------------------------------------------
 
@@ -309,6 +310,12 @@ class Nodo:
         if self.estado.esta_resuelto():
             return "SOLUCION"
 
+        # FIX 2: obtener_celda_mas_restringida ya calcula las opciones válidas
+        # internamente. Los hijos construyen su propio Nodo (que llama
+        # heuristica()), así que NO necesitamos volver a llamar MRV aquí.
+        # Antes, expandir() llamaba MRV (que hace 729×9 validaciones) y luego
+        # cada Nodo hijo volvía a llamar heuristica() (otras 729×9 más):
+        # el doble del trabajo. Ahora heuristica() es O(729) — sin problema.
         celda, opciones = self.estado.obtener_celda_mas_restringida()
 
         if celda is None or len(opciones) == 0:
@@ -318,7 +325,7 @@ class Nodo:
         hijos = []
 
         for valor in opciones:
-            nuevo_grid  = copy.deepcopy(self.estado.grid)
+            nuevo_grid   = copy.deepcopy(self.estado.grid)
             nuevo_estado = Estado(nuevo_grid)
             nuevo_estado.aplicar_movimiento(z, x, y, valor)
 
@@ -367,6 +374,8 @@ class ArbolBuscadorAStar:
         heapq.heappush(frontera, self.raiz)
         self.nodos_abiertos = 1
         t_inicio = time.time()
+        t_ultimo_log = t_inicio        # control de frecuencia de logs
+        LOG_INTERVALO = 2.0            # imprimir resumen cada N segundos
 
         while frontera:
 
@@ -374,13 +383,13 @@ class ArbolBuscadorAStar:
             elapsed = time.time() - t_inicio
 
             if elapsed >= self.max_tiempo:
-                print(f"\n[LIMITE] Tiempo máximo alcanzado ({self.max_tiempo}s)")
+                print(f"\n[LIMITE] Tiempo maximo alcanzado ({self.max_tiempo}s)", flush=True)
                 mejor = min(frontera, key=lambda n: n.h)
                 return mejor.estado, self._ruta(mejor), False
 
             total = self.nodos_abiertos + self.nodos_cerrados
             if total >= self.max_nodos:
-                print(f"\n[LIMITE] Nodos máximos alcanzados ({self.max_nodos})")
+                print(f"\n[LIMITE] Nodos maximos alcanzados ({self.max_nodos})", flush=True)
                 mejor = min(frontera, key=lambda n: n.h)
                 return mejor.estado, self._ruta(mejor), False
             # ─────────────────────────────────────────
@@ -399,29 +408,70 @@ class ArbolBuscadorAStar:
             self.visitados.add(estado_hash)
             self.nodos_cerrados += 1
 
+            # ── log periódico cada LOG_INTERVALO segundos ────────────────────
+            ahora = time.time()
+            if ahora - t_ultimo_log >= LOG_INTERVALO:
+                vacias = nodo_actual.h   # h = celdas vacías (Fix 2)
+                llenadas = 729 - vacias
+                pct = llenadas / 729 * 100
+                beff_live = self._factor_ramificacion_efectivo(
+                    nodo_actual.g, self.nodos_cerrados)
+
+                # último operador aplicado para llegar a este nodo
+                if nodo_actual.operador:
+                    tz, tx, ty, tv = nodo_actual.operador
+                    op_str = f"T{tz} fila={tx} col={ty} val={tv}"
+                else:
+                    op_str = "raiz"
+
+                print(
+                    f"  [{elapsed:6.1f}s]"
+                    f"  nodo={self.nodos_cerrados:>7,}"
+                    f"  prof={nodo_actual.g:>4}"
+                    f"  f={nodo_actual.f:>4}  g={nodo_actual.g:>4}  h={nodo_actual.h:>4}"
+                    f"  llenas={llenadas:>3}/729 ({pct:4.1f}%)"
+                    f"  backt={self.backtracks:>5,}"
+                    f"  b*={beff_live:.4f}"
+                    f"  op=[{op_str}]",
+                    flush=True
+                )
+                t_ultimo_log = ahora
+            # ─────────────────────────────────────────────────────────────────
+
             resultado = nodo_actual.expandir()
 
             # ── solución ────────────────────────────
             if resultado == "SOLUCION":
                 elapsed = time.time() - t_inicio
                 ruta = self._ruta(nodo_actual)
-                print("\n" + "="*50)
-                print("✓  SOLUCIÓN ENCONTRADA")
-                print("="*50)
-                print(f"  Nodos abiertos  : {self.nodos_abiertos}")
-                print(f"  Nodos cerrados  : {self.nodos_cerrados}")
-                print(f"  Backtracks      : {self.backtracks}")
-                print(f"  Profundidad     : {nodo_actual.g}")
-                print(f"  Tiempo          : {elapsed:.2f}s")
-                print(f"  Pasos de ruta   : {len(ruta)}")
+                print("\n" + "="*50, flush=True)
+                print("  SOLUCION ENCONTRADA", flush=True)
+                print("="*50, flush=True)
+                print(f"  Nodos abiertos  : {self.nodos_abiertos}", flush=True)
+                print(f"  Nodos cerrados  : {self.nodos_cerrados}", flush=True)
+                print(f"  Backtracks      : {self.backtracks}", flush=True)
+                print(f"  Profundidad     : {nodo_actual.g}", flush=True)
+                print(f"  Tiempo          : {elapsed:.2f}s", flush=True)
+                print(f"  Pasos de ruta   : {len(ruta)}", flush=True)
                 beff = self._factor_ramificacion_efectivo(
                     nodo_actual.g, self.nodos_cerrados)
-                print(f"  b* efectivo     : {beff:.4f}")
+                print(f"  b* efectivo     : {beff:.4f}", flush=True)
                 return nodo_actual.estado, ruta, True
 
-            # ── callejón sin salida ──────────────────
+            # ── callejón sin salida / poda ───────────
             if not resultado:
                 self.backtracks += 1
+                # log inmediato de poda (solo cada 500 podas para no saturar)
+                if self.backtracks % 500 == 0:
+                    if nodo_actual.operador:
+                        tz, tx, ty, tv = nodo_actual.operador
+                        print(
+                            f"  [PODA #{self.backtracks:,}]"
+                            f"  T{tz} fila={tx} col={ty} val={tv}"
+                            f"  prof={nodo_actual.g}"
+                            f"  ({elapsed:.1f}s)",
+                            flush=True
+                        )
                 continue
 
             # ── insertar hijos ───────────────────────
@@ -431,7 +481,7 @@ class ArbolBuscadorAStar:
                     heapq.heappush(frontera, hijo)
                     self.nodos_abiertos += 1
 
-        print("\nNO EXISTE SOLUCIÓN")
+        print("\nNO EXISTE SOLUCIÓN", flush=True)
         return None, [], False
 
     # --------------------------------------------------
@@ -471,35 +521,35 @@ class ArbolBuscadorAStar:
 def imprimir_tablero(tablero):
     for i, fila in enumerate(tablero):
         if i % 3 == 0 and i != 0:
-            print("  ------+-------+------")
+            print("  ------+-------+------", flush=True)
         fila_str = ""
         for j, val in enumerate(fila):
             if j % 3 == 0 and j != 0:
                 fila_str += "| "
             fila_str += (str(val) if val != 0 else ".") + " "
-        print("  " + fila_str)
+        print("  " + fila_str, flush=True)
 
 
 def imprimir_estado(estado, titulo="ESTADO"):
-    print(f"\n{'='*50}")
-    print(f"  {titulo}")
-    print(f"{'='*50}")
+    print(f"\n{'='*50}", flush=True)
+    print(f"  {titulo}", flush=True)
+    print(f"{'='*50}", flush=True)
     for z in range(9):
-        print(f"\n  [ TABLERO {z} ]")
+        print(f"\n  [ TABLERO {z} ]", flush=True)
         imprimir_tablero(estado.grid[z])
 
 
 def imprimir_ruta(ruta, max_pasos=10):
     """Muestra los primeros 'max_pasos' de la ruta de solución."""
-    print(f"\n{'='*50}")
-    print(f"  RUTA DE SOLUCIÓN (primeros {min(max_pasos, len(ruta))} pasos)")
-    print(f"{'='*50}")
+    print(f"\n{'='*50}", flush=True)
+    print(f"  RUTA DE SOLUCIÓN (primeros {min(max_pasos, len(ruta))} pasos)", flush=True)
+    print(f"{'='*50}", flush=True)
     for i, paso in enumerate(ruta[:max_pasos]):
         z, x, y, v = paso["operador"]
         print(f"  Paso {i+1:3d} | g={paso['g']:3d} | "
-              f"Tablero {z}, fila {x}, col {y}  →  valor {v}")
+              f"Tablero {z}, fila {x}, col {y}  →  valor {v}", flush=True)
     if len(ruta) > max_pasos:
-        print(f"  ... ({len(ruta) - max_pasos} pasos más)")
+        print(f"  ... ({len(ruta) - max_pasos} pasos más)", flush=True)
 
 
 # =========================================================
@@ -514,16 +564,16 @@ if __name__ == "__main__":
     PORCENTAJE  = 0.15   # fracción de celdas prellenadas (~15 %)
     SEMILLA     = 42     # None = aleatoria pura
     MAX_NODOS   = 200_000
-    MAX_TIEMPO  = 120    # segundos
+    MAX_TIEMPO  = 180    # segundos
     # ─────────────────────────────────────────────────
 
-    print("\n" + "="*50)
-    print("  SUDOKU 9-TABLEROS  –  Búsqueda A*")
-    print("="*50)
-    print(f"  Porcentaje relleno inicial : {PORCENTAJE*100:.0f}%")
-    print(f"  Semilla aleatoria          : {SEMILLA}")
-    print(f"  Límite nodos               : {MAX_NODOS:,}")
-    print(f"  Límite tiempo              : {MAX_TIEMPO}s")
+    print("\n" + "="*50, flush=True)
+    print("  SUDOKU 9-TABLEROS  –  Búsqueda A*", flush=True)
+    print("="*50, flush=True)
+    print(f"  Porcentaje relleno inicial : {PORCENTAJE*100:.0f}%", flush=True)
+    print(f"  Semilla aleatoria          : {SEMILLA}", flush=True)
+    print(f"  Límite nodos               : {MAX_NODOS:,}", flush=True)
+    print(f"  Límite tiempo              : {MAX_TIEMPO}s", flush=True)
 
     # ── Generar estado inicial aleatorio ─────────────
     estado_inicial, celdas_fijas = generar_estado_aleatorio(
@@ -533,19 +583,19 @@ if __name__ == "__main__":
 
     # ── Verificar consistencia inicial ───────────────
     if not estado_inicial.es_consistente():
-        print("\n[ERROR] El estado inicial generado es INCONSISTENTE.")
-        print("        El problema no tiene solución con esta configuración.")
+        print("\n[ERROR] El estado inicial generado es INCONSISTENTE.", flush=True)
+        print("        El problema no tiene solución con esta configuración.", flush=True)
         sys.exit(1)
 
     celdas_prellenadas = sum(
         1 for z in range(9) for x in range(9) for y in range(9)
         if estado_inicial.grid[z][x][y] != 0
     )
-    print(f"\n  Celdas prellenadas         : {celdas_prellenadas} / 729")
+    print(f"\n  Celdas prellenadas         : {celdas_prellenadas} / 729", flush=True)
     imprimir_estado(estado_inicial, "ESTADO INICIAL")
 
     # ── Búsqueda A* ──────────────────────────────────
-    print("\n\nINICIANDO A*...\n")
+    print("\n\nINICIANDO A*...\n", flush=True)
     arbol = ArbolBuscadorAStar(
         estado_inicial,
         max_nodos=MAX_NODOS,
@@ -558,6 +608,6 @@ if __name__ == "__main__":
         imprimir_estado(solucion, "ESTADO FINAL")
         imprimir_ruta(ruta)
         if not es_optima:
-            print("\n[INFO] Solución parcial: se alcanzó un límite de búsqueda.")
+            print("\n[INFO] Solución parcial: se alcanzó un límite de búsqueda.", flush=True)
     else:
-        print("\nNo se encontró solución.")
+        print("\nNo se encontró solución.", flush=True)

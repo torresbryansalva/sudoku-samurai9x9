@@ -9,7 +9,7 @@ Importa sudoku directamente y muestra:
 
 Uso:
     python view.py                        # parámetros por defecto
-    python view.py --semilla 7 --pct 0.12 --delay 0.05
+    python view.py --semilla 7 --pct 0.12 --delay 0.3
 """
 
 import sys
@@ -67,12 +67,12 @@ GRID_POS = {
 }
 
 # Colores
-COLOR_FIJO      = "#378668"   # azul oscuro  — celda prellenada
+COLOR_FIJO      = "#60228a"   # azul oscuro  — celda prellenada
 COLOR_NUEVO     = "#e94560"   # rojo vivo    — última celda colocada
 COLOR_ESPEJO    = "#f5a623"   # naranja      — celda propagada por espejo
-COLOR_NORMAL    = "#23376e"   # azul medio   — celda resuelta normal
-COLOR_VACIO     = "#9fb5cf"   # azul profundo — celda vacía
-COLOR_GRID_BG   = "#5353c5"
+COLOR_NORMAL    = "#1d558a"   # azul medio   — celda resuelta normal
+COLOR_VACIO     = "#8ea7c5"   # azul profundo — celda vacía
+COLOR_GRID_BG   = "#3ec58d"
 COLOR_TEXT_FIJO = "#e0e0ff"
 COLOR_TEXT_NEW  = "#ffffff"
 COLOR_BORDER    = "#53d8fb"
@@ -158,12 +158,13 @@ def dibujar_tablero(ax, grid_z, fijas, ultimo=None, espejos=None, titulo=""):
 class Visualizador:
 
     def __init__(self, estado_inicial, celdas_fijas,
-                 ruta, estado_resuelto, stats):
+                 ruta, estado_resuelto, stats, es_optima=True):  # FIX 4: nuevo parámetro
 
         self.estado_inicial  = estado_inicial
         self.estado_resuelto = estado_resuelto
         self.ruta            = ruta          # lista de dicts con operador
         self.stats           = stats
+        self.es_optima       = es_optima     # FIX 4: False = solución parcial
         self.paso_actual     = 0
         self.total_pasos     = len(ruta)
         self.reproduciendo   = False
@@ -181,12 +182,16 @@ class Visualizador:
         self.grid_actual = copy.deepcopy(estado_inicial.grid)
 
         self._construir_figura()
+        # FIX 4: actualizar título de ventana si es solución parcial
+        if not self.es_optima:
+            self.fig.canvas.manager.set_window_title(
+                "Sudoku 9 Tableros — SOLUCION PARCIAL (limite alcanzado)")
         self._dibujar_todo()
 
     # ── construcción de la figura ────────────────────────────────────────────
 
     def _construir_figura(self):
-        self.fig = plt.figure(figsize=(16, 11), facecolor=COLOR_GRID_BG)
+        self.fig = plt.figure(figsize=(14, 8), facecolor=COLOR_GRID_BG)
         self.fig.canvas.manager.set_window_title(
             "Sudoku 9 Tableros — Visualizador A*")
 
@@ -230,11 +235,11 @@ class Visualizador:
 
         btn_kw = dict(color="#1a1a3a", hovercolor="#e94560")
         self.btn_prev  = Button(self.ax_btn_prev,  "◀ Prev",  **btn_kw)
-        self.btn_play  = Button(self.ax_btn_play,  "▶ PLAYY",  color="#064935", hovercolor="#e94560")
+        self.btn_play  = Button(self.ax_btn_play,  "▶ DALE PLAY",  color="#1a5f37", hovercolor="#e94560")
         self.btn_next  = Button(self.ax_btn_next,  "Next ▶",  **btn_kw)
         self.btn_reset = Button(self.ax_btn_reset, "↺ Reset", **btn_kw)
         self.slider    = Slider(
-            self.ax_slider, "Velocidad", 0.2, 1.0,
+            self.ax_slider, "Velocidad", 0.1, 1.0,
             valinit=self.delay, color="#53d8fb",
         )
 
@@ -302,6 +307,19 @@ class Visualizador:
         lines = [
             ("ESTADÍSTICAS A*", None, 10, COLOR_BORDER),
             ("", None, 6, "white"),
+        ]
+
+        # FIX 4: aviso visible cuando la solución es parcial
+        if not self.es_optima:
+            lines += [
+                ("!! SOLUCION PARCIAL !!", None, 9, "#e94560"),
+                ("Limite de busqueda", None, 8, "#f5a623"),
+                ("alcanzado. Celdas", None, 8, "#f5a623"),
+                ("sin resolver.", None, 8, "#f5a623"),
+                ("", None, 4, "white"),
+            ]
+
+        lines += [
             (f"Paso        {self.paso_actual} / {self.total_pasos}",
              None, 8, "white"),
             (f"Celdas llenas   {llenadas} / 729",
@@ -315,7 +333,7 @@ class Visualizador:
              None, 8, "white"),
             (f"Backtracks      {self.stats.get('backtracks', '?')}",
              None, 8, "#f5a623"),
-            (f"Tiempo búsq.    {self.stats.get('tiempo', '?')}s",
+            (f"Tiempo busq.    {self.stats.get('tiempo', '?')}s",
              None, 8, "white"),
             (f"b* efectivo     {self.stats.get('beff', '?')}",
              None, 8, "#e94560"),
@@ -347,6 +365,15 @@ class Visualizador:
 
         pct = self.paso_actual / max(self.total_pasos, 1)
         bar_w = 0.90
+
+        # FIX 4: color de barra diferente si es solución parcial
+        if not self.es_optima:
+            color_completo = "#f5a623"   # naranja = parcial
+            label_suffix   = " (PARCIAL)"
+        else:
+            color_completo = "#00ff88"   # verde = completo
+            label_suffix   = ""
+
         ax.add_patch(patches.FancyBboxPatch(
             (0.05, 0.3), bar_w, 0.4,
             boxstyle="round,pad=0.02",
@@ -357,11 +384,11 @@ class Visualizador:
             ax.add_patch(patches.FancyBboxPatch(
                 (0.05, 0.3), bar_w * pct, 0.4,
                 boxstyle="round,pad=0.02",
-                facecolor=COLOR_NUEVO if pct < 1 else "#00ff88",
+                facecolor=COLOR_NUEVO if pct < 1 else color_completo,
                 edgecolor="none",
                 transform=ax.transAxes, clip_on=False,
             ))
-        ax.text(0.5, 0.82, f"{pct*100:.1f}%  completado",
+        ax.text(0.5, 0.82, f"{pct*100:.1f}%  completado{label_suffix}",
                 transform=ax.transAxes, ha="center", va="bottom",
                 fontsize=8, color="white", fontfamily="monospace")
 
@@ -499,6 +526,13 @@ class Visualizador:
 # ============================================================================
 
 def main():
+    # Forzar flush inmediato en VSCode / terminales con buffer
+    sys.stdout.reconfigure(line_buffering=True)
+
+    # Configurar backend ANTES de importar pyplot pero DESPUÉS
+    # de que el proceso ya tiene stdout listo
+    matplotlib.use("TkAgg")   # cambiar a "Qt5Agg" o "Agg" si no hay display
+
     parser = argparse.ArgumentParser(
         description="Visualizador paso a paso del Sudoku 9 Tableros con A*"
     )
@@ -508,37 +542,37 @@ def main():
                         help="Porcentaje de relleno inicial (default: 0.12)")
     parser.add_argument("--max_nodos", type=int,  default=150_000,
                         help="Máximo de nodos (default: 150000)")
-    parser.add_argument("--max_tiempo", type=int, default=120,
-                        help="Tiempo máximo en segundos (default: 90)")
-    parser.add_argument("--delay",    type=float, default=0.08,
-                        help="Delay inicial de animación en seg (default: 0.08)")
+    parser.add_argument("--max_tiempo", type=int, default=180,
+                        help="Tiempo máximo en segundos (default: 180)")
+    parser.add_argument("--delay",    type=float, default=0.3,
+                        help="Delay inicial de animación en seg (default: 0.2)")
     args = parser.parse_args()
 
-    print("="*55)
-    print("  SUDOKU 9 TABLEROS — Visualizador A*")
-    print("="*55)
-    print(f"  Semilla          : {args.semilla}")
-    print(f"  Relleno inicial  : {args.pct*100:.0f}%")
-    print(f"  Límite nodos     : {args.max_nodos:,}")
-    print(f"  Límite tiempo    : {args.max_tiempo}s")
+    print("="*55, flush=True)
+    print("  SUDOKU 9 TABLEROS — Visualizador A*", flush=True)
+    print("="*55, flush=True)
+    print(f"  Semilla          : {args.semilla}", flush=True)
+    print(f"  Relleno inicial  : {args.pct*100:.0f}%", flush=True)
+    print(f"  Límite nodos     : {args.max_nodos:,}", flush=True)
+    print(f"  Límite tiempo    : {args.max_tiempo}s", flush=True)
 
     # ── generar estado inicial ────────────────────────────────────────────
-    print("\n[1/3] Generando estado inicial aleatorio...")
+    print("\n[1/3] Generando estado inicial aleatorio...", flush=True)
     estado_inicial, celdas_fijas = generar_estado_aleatorio(
         porcentaje_relleno=args.pct,
         semilla=args.semilla,
     )
 
     if not estado_inicial.es_consistente():
-        print("\n[ERROR] Estado inicial INCONSISTENTE — sin solución.")
+        print("\n[ERROR] Estado inicial INCONSISTENTE — sin solución.", flush=True)
         sys.exit(1)
 
     n_fijas = sum(1 for z in range(9) for x in range(9)
                   for y in range(9) if estado_inicial.grid[z][x][y] != 0)
-    print(f"         Celdas prellenadas: {n_fijas} / 729")
+    print(f"         Celdas prellenadas: {n_fijas} / 729", flush=True)
 
     # ── ejecutar A* ───────────────────────────────────────────────────────
-    print("\n[2/3] Ejecutando A*...")
+    print("\n[2/3] Ejecutando A*...", flush=True)
     t0 = time.time()
     arbol = ArbolBuscadorAStar(
         estado_inicial,
@@ -549,11 +583,11 @@ def main():
     elapsed = time.time() - t0
 
     if not solucion:
-        print("\n[ERROR] No se encontró solución.")
+        print("\n[ERROR] No se encontró solución.", flush=True)
         sys.exit(1)
 
     if not ruta:
-        print("\n[INFO] El estado inicial ya era la solución (sin pasos).")
+        print("\n[INFO] El estado inicial ya era la solución (sin pasos, flush=True).")
 
     beff = ArbolBuscadorAStar._factor_ramificacion_efectivo(
         len(ruta), arbol.nodos_cerrados
@@ -567,17 +601,17 @@ def main():
         "beff"      : f"{beff:.4f}",
     }
 
-    print(f"\n  Ruta encontrada: {len(ruta)} pasos")
-    print(f"  Nodos cerrados : {arbol.nodos_cerrados:,}")
-    print(f"  b* efectivo    : {beff:.4f}")
+    print(f"\n  Ruta encontrada: {len(ruta)} pasos", flush=True)
+    print(f"  Nodos cerrados : {arbol.nodos_cerrados:,}", flush=True)
+    print(f"  b* efectivo    : {beff:.4f}", flush=True)
 
     # ── lanzar visualizador ───────────────────────────────────────────────
-    print("\n[3/3] Abriendo visualizador...\n")
-    print("  Controles:")
-    print("    ▶ Play   — reproduce automáticamente")
-    print("    ◀ Prev / Next ▶ — paso a paso")
-    print("    ↺ Reset  — vuelve al inicio")
-    print("    Slider   — velocidad de reproducción")
+    print("\n[3/3] Abriendo visualizador...\n", flush=True)
+    print("  Controles:", flush=True)
+    print("    ▶ Play   — reproduce automáticamente", flush=True)
+    print("    ◀ Prev / Next ▶ — paso a paso", flush=True)
+    print("    ↺ Reset  — vuelve al inicio", flush=True)
+    print("    Slider   — velocidad de reproducción", flush=True)
 
     viz = Visualizador(
         estado_inicial=estado_inicial,
@@ -585,6 +619,7 @@ def main():
         ruta=ruta,
         estado_resuelto=solucion,
         stats=stats,
+        es_optima=es_optima,   # FIX 4: pasar el flag de solución óptima
     )
     viz.delay = args.delay
     viz.mostrar()
