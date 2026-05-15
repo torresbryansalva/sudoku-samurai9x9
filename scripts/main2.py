@@ -1,16 +1,18 @@
 """
-main.py  —  Visualizador paso a paso del Sudoku 9 Tableros (Pygame)
+main2.py  —  Visualizador paso a paso del Sudoku 9 Tableros (Pygame)
 ====================================================================
-Importa sudoku.py como backend y muestra con pygame:
-  - Layout de los 9 tableros (posición fiel al dibujo original)
-  - Animación celda por celda de la ruta de solución
-  - Panel de estadísticas en tiempo real
+Variante de main.py que usa DFS + Backtracking + MRV en lugar de A*.
+
+Importa sudoku2.py como backend y muestra con pygame:
+  - Layout de los 9 tableros (posicion fiel al dibujo original)
+  - Animacion celda por celda de la ruta de solucion
+  - Panel de estadisticas en tiempo real
   - Barra de progreso y controles de velocidad
   - Botones Play / Pausa / Prev / Next / Reset
 
 Uso:
-    python main.py
-    python main.py --semilla 7 --pct 0.12 --delay 0.3
+    python main2.py
+    python main2.py --semilla 7 --pct 0.12 --delay 0.3
 """
 
 import sys
@@ -25,15 +27,15 @@ if root_path not in sys.path:
 
 import pygame
 
-from utils.sudoku import (
+from utils.sudoku2 import (
     generar_estado_aleatorio,
-    ArbolBuscadorAStar,
+    ArbolBuscadorDFS,
     CONEXIONES,
 )
 
 
 # ============================================================================
-# LAYOUT 5x5 — posición de cada tablero (fiel al diseño original)
+# LAYOUT 5x5 — posicion de cada tablero (fiel al diseno original)
 # ============================================================================
 
 GRID_POS = {
@@ -53,16 +55,16 @@ GRID_POS = {
 # COLORES (RGB)
 # ============================================================================
 
-COLOR_FIJO      = (96, 34, 138)      # morado — celda prellenada
-COLOR_NUEVO     = (233, 69, 96)      # rojo vivo — última celda colocada
-COLOR_ESPEJO    = (245, 166, 35)     # naranja — celda propagada por espejo
-COLOR_NORMAL    = (29, 85, 138)      # azul medio — celda resuelta normal
-COLOR_VACIO     = (142, 167, 197)    # azul claro — celda vacía
-COLOR_BG        = (62, 197, 141)     # fondo general (verde)
-COLOR_PANEL_BG  = (13, 13, 31)       # panel info
+COLOR_FIJO      = (96, 34, 138)
+COLOR_NUEVO     = (233, 69, 96)
+COLOR_ESPEJO    = (245, 166, 35)
+COLOR_NORMAL    = (29, 85, 138)
+COLOR_VACIO     = (142, 167, 197)
+COLOR_BG        = (62, 197, 141)
+COLOR_PANEL_BG  = (13, 13, 31)
 COLOR_TEXT      = (224, 224, 255)
 COLOR_TEXT_NEW  = (255, 255, 255)
-COLOR_BORDER    = (83, 216, 251)     # cian
+COLOR_BORDER    = (83, 216, 251)
 COLOR_GRID_LINE = (42, 42, 74)
 COLOR_BTN_BG    = (26, 26, 58)
 COLOR_BTN_HOV   = (233, 69, 96)
@@ -137,20 +139,16 @@ class Slider:
         return self.vmin + pct * (self.vmax - self.vmin)
 
     def draw(self, surf, font):
-        # track
         track = pygame.Rect(self.rect.x, self.rect.centery - 3,
                             self.rect.w, 6)
         pygame.draw.rect(surf, COLOR_BTN_BG, track, border_radius=3)
         pygame.draw.rect(surf, COLOR_BORDER, track, 1, border_radius=3)
-        # filled part
         fx = self._val_to_x()
         filled = pygame.Rect(self.rect.x, self.rect.centery - 3,
                              fx - self.rect.x, 6)
         pygame.draw.rect(surf, COLOR_BORDER, filled, border_radius=3)
-        # handle
         pygame.draw.circle(surf, (255, 255, 255), (fx, self.rect.centery), 8)
         pygame.draw.circle(surf, COLOR_BORDER, (fx, self.rect.centery), 8, 2)
-        # label
         txt = font.render(f"{self.label}: {self.value:.2f}s",
                           True, (255, 255, 255))
         surf.blit(txt, (self.rect.x, self.rect.y - 20))
@@ -192,30 +190,22 @@ class Visualizador:
         self.delay           = 0.3
         self._t_ultimo_step  = 0.0
 
-        # conjuntos de celdas fijas por tablero
         self.fijas = {z: set() for z in range(9)}
         for (z, x, y) in celdas_fijas:
             self.fijas[z].add((x, y))
 
-        # estado mutable
         self.grid_actual = copy.deepcopy(estado_inicial.grid)
 
-        # geometría de los 9 tableros
         self._calcular_geometria()
 
     def _calcular_geometria(self):
-        """Calcula tamaño de cada tablero según la grilla 5x5."""
-        # margen entre tableros
         gap = 6
-        cell_w = (BOARD_AREA_W - gap * 6) // 5  # 5 columnas
+        cell_w = (BOARD_AREA_W - gap * 6) // 5
         cell_h = (BOARD_AREA_H - gap * 6) // 5
-        # cada tablero es cuadrado, usamos el menor
         self.board_size = min(cell_w, cell_h)
         self.cell_size = self.board_size // 9
 
-        # rectángulos por tablero
         self.board_rects = {}
-        # centrar la grilla 5x5
         grid_total_w = 5 * self.board_size + 4 * gap
         grid_total_h = 5 * self.board_size + 4 * gap
         ox = BOARD_AREA_X + (BOARD_AREA_W - grid_total_w) // 2
@@ -228,19 +218,16 @@ class Visualizador:
                 bx, by, self.board_size, self.board_size
             )
 
-    # ── inicialización pygame ──────────────────────────────────────────────
-
     def _init_pygame(self):
         pygame.init()
         self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
-        title = "Sudoku 9 Tableros — Visualizador A*"
+        title = "Sudoku 9 Tableros - Visualizador DFS+MRV"
         if not self.es_optima:
             title += "  [SOLUCION PARCIAL]"
         pygame.display.set_caption(title)
 
         self.clock = pygame.time.Clock()
 
-        # fuentes
         self.font_cell  = pygame.font.SysFont("consolas", max(10, self.cell_size - 6), bold=True)
         self.font_small = pygame.font.SysFont("consolas", 12)
         self.font_med   = pygame.font.SysFont("consolas", 14)
@@ -248,7 +235,6 @@ class Visualizador:
         self.font_title = pygame.font.SysFont("consolas", 22, bold=True)
         self.font_btn   = pygame.font.SysFont("consolas", 14, bold=True)
 
-        # construir controles
         self._construir_controles()
 
     def _construir_controles(self):
@@ -263,8 +249,6 @@ class Visualizador:
                              0.05, 1.0, self.delay, "Velocidad")
         self.buttons = [self.btn_prev, self.btn_play,
                         self.btn_next, self.btn_reset]
-
-    # ── lógica de pasos ─────────────────────────────────────────────────────
 
     def _aplicar_paso(self, n):
         self.grid_actual = copy.deepcopy(self.estado_inicial.grid)
@@ -290,19 +274,15 @@ class Visualizador:
         self.paso_actual = n
         self._aplicar_paso(n)
 
-    # ── dibujo de un tablero 9x9 ────────────────────────────────────────────
-
     def _dibujar_tablero(self, z, ultimo=None, espejos=None):
         rect = self.board_rects[z]
         espejos = espejos or set()
         grid = self.grid_actual[z]
         fijas = self.fijas[z]
 
-        # fondo del tablero
         pygame.draw.rect(self.screen, COLOR_BG, rect)
 
         cs = self.cell_size
-        # offset para centrar el 9x9 dentro del rect del tablero
         ox = rect.x + (rect.w - cs * 9) // 2
         oy = rect.y + (rect.h - cs * 9) // 2
 
@@ -336,7 +316,6 @@ class Visualizador:
                     ty = cy + cs // 2 - txt.get_height() // 2
                     self.screen.blit(txt, (tx, ty))
 
-        # lineas finas
         for k in range(10):
             if k % 3 != 0:
                 pygame.draw.line(self.screen, COLOR_GRID_LINE,
@@ -345,7 +324,6 @@ class Visualizador:
                 pygame.draw.line(self.screen, COLOR_GRID_LINE,
                                  (ox, oy + k * cs),
                                  (ox + 9 * cs, oy + k * cs), 1)
-        # lineas 3x3
         for k in range(0, 10, 3):
             pygame.draw.line(self.screen, COLOR_BORDER,
                              (ox + k * cs, oy),
@@ -354,14 +332,10 @@ class Visualizador:
                              (ox, oy + k * cs),
                              (ox + 9 * cs, oy + k * cs), 2)
 
-        # título del tablero
         title = self.font_small.render(f"Tablero {z}", True, COLOR_BORDER)
         self.screen.blit(title, (rect.x + 4, rect.y + 2))
 
-    # ── panel de información ────────────────────────────────────────────────
-
     def _dibujar_panel_info(self, ultimo_op=None):
-        # fondo
         info_rect = pygame.Rect(PANEL_X, PANEL_Y, PANEL_W, 380)
         pygame.draw.rect(self.screen, COLOR_PANEL_BG,
                          info_rect, border_radius=8)
@@ -371,8 +345,7 @@ class Visualizador:
         x = PANEL_X + 16
         y = PANEL_Y + 12
 
-        # título
-        t = self.font_big.render("ESTADISTICAS A*", True, COLOR_BORDER)
+        t = self.font_big.render("ESTADISTICAS DFS", True, COLOR_BORDER)
         self.screen.blit(t, (x, y))
         y += 30
 
@@ -400,12 +373,14 @@ class Visualizador:
             (f"Celdas llenas {llenadas} / 729", COLOR_BORDER),
             (f"Celdas vacias {vacias}", (170, 170, 204)),
             ("", COLOR_TEXT_NEW),
-            (f"Nodos abiertos {self.stats.get('abiertos', '?')}",
+            (f"Nodos pila    {self.stats.get('abiertos', '?')}",
              COLOR_TEXT_NEW),
             (f"Nodos cerrados {self.stats.get('cerrados', '?')}",
              COLOR_TEXT_NEW),
             (f"Backtracks     {self.stats.get('backtracks', '?')}",
              COLOR_PROG_PART),
+            (f"Profundidad mx {self.stats.get('prof_max', '?')}",
+             COLOR_TEXT_NEW),
             (f"Tiempo busq.   {self.stats.get('tiempo', '?')}s",
              COLOR_TEXT_NEW),
             (f"b* efectivo    {self.stats.get('beff', '?')}",
@@ -427,8 +402,6 @@ class Visualizador:
             self.screen.blit(t, (x, y)); y += 16
             t = self.font_big.render(f"-> valor {v}", True, COLOR_NUEVO)
             self.screen.blit(t, (x, y)); y += 22
-
-    # ── barra de progreso ───────────────────────────────────────────────────
 
     def _dibujar_progreso(self):
         bar_x = PANEL_X + 16
@@ -461,8 +434,6 @@ class Visualizador:
             (bar_x + bar_w // 2 - txt.get_width() // 2, bar_y - 20)
         )
 
-    # ── leyenda ─────────────────────────────────────────────────────────────
-
     def _dibujar_leyenda(self):
         x = PANEL_X + 16
         y = PANEL_Y + 460
@@ -493,23 +464,18 @@ class Visualizador:
             self.screen.blit(t, (x + 48, yy + 2))
             yy += 28
 
-    # ── controles ───────────────────────────────────────────────────────────
-
     def _dibujar_controles(self):
         for b in self.buttons:
             b.draw(self.screen, self.font_btn)
         self.slider.draw(self.screen, self.font_small)
 
-        # contador de paso a la derecha del slider
         info = self.font_med.render(
             f"Paso  {self.paso_actual} / {self.total_pasos}",
             True, (255, 255, 255))
         self.screen.blit(info, (790, CTRL_Y + 10))
 
-    # ── titulo ──────────────────────────────────────────────────────────────
-
     def _dibujar_titulo(self):
-        title = "SUDOKU 9 TABLEROS  ·  Busqueda A*"
+        title = "SUDOKU 9 TABLEROS  -  Busqueda DFS + Backtracking + MRV"
         if not self.es_optima:
             title += "  (solucion parcial)"
         t = self.font_title.render(title, True, COLOR_BORDER)
@@ -517,24 +483,19 @@ class Visualizador:
             t, (WINDOW_W // 2 - t.get_width() // 2, 10)
         )
 
-    # ── dibujo completo ─────────────────────────────────────────────────────
-
     def _dibujar_frame(self):
         self.screen.fill(COLOR_BG)
 
-        # ultimo operador / espejos para resaltar
         if self.paso_actual > 0:
             op = self.ruta[self.paso_actual - 1]["operador"]
         else:
             op = None
         espejos_op = self._espejos_de_op(op)
 
-        # franja superior con titulo
         pygame.draw.rect(self.screen, COLOR_PANEL_BG,
                          (0, 0, WINDOW_W, 40))
         self._dibujar_titulo()
 
-        # 9 tableros
         for z in range(9):
             ult = None
             if op and op[0] == z:
@@ -545,19 +506,15 @@ class Visualizador:
                 espejos=espejos_op.get(z, set()),
             )
 
-        # panel derecho
         self._dibujar_panel_info(ultimo_op=op)
         self._dibujar_progreso()
         self._dibujar_leyenda()
 
-        # franja inferior con controles
         pygame.draw.rect(self.screen, COLOR_PANEL_BG,
                          (0, CTRL_Y - 10, WINDOW_W, CTRL_H + 30))
         self._dibujar_controles()
 
         pygame.display.flip()
-
-    # ── manejo de eventos ───────────────────────────────────────────────────
 
     def _on_play(self):
         if self.paso_actual >= self.total_pasos:
@@ -615,8 +572,6 @@ class Visualizador:
             self.slider.handle_up()
         return True
 
-    # ── loop principal ──────────────────────────────────────────────────────
-
     def mostrar(self):
         self._init_pygame()
         self._t_ultimo_step = time.time()
@@ -627,10 +582,8 @@ class Visualizador:
                     corriendo = False
                     break
 
-            # sincronizar delay con slider
             self.delay = self.slider.value
 
-            # avance automatico
             if self.reproduciendo:
                 ahora = time.time()
                 if ahora - self._t_ultimo_step >= self.delay:
@@ -655,7 +608,7 @@ def main():
     sys.stdout.reconfigure(line_buffering=True)
 
     parser = argparse.ArgumentParser(
-        description="Visualizador paso a paso del Sudoku 9 Tableros con A* (pygame)"
+        description="Visualizador paso a paso del Sudoku 9 Tableros con DFS+MRV (pygame)"
     )
     parser.add_argument("--semilla",   type=int,   default=42)
     parser.add_argument("--pct",       type=float, default=0.12)
@@ -665,7 +618,7 @@ def main():
     args = parser.parse_args()
 
     print("=" * 55, flush=True)
-    print("  SUDOKU 9 TABLEROS — Visualizador A* (pygame)", flush=True)
+    print("  SUDOKU 9 TABLEROS - Visualizador DFS+MRV (pygame)", flush=True)
     print("=" * 55, flush=True)
     print(f"  Semilla          : {args.semilla}", flush=True)
     print(f"  Relleno inicial  : {args.pct * 100:.0f}%", flush=True)
@@ -688,9 +641,9 @@ def main():
     )
     print(f"         Celdas prellenadas: {n_fijas} / 729", flush=True)
 
-    print("\n[2/3] Ejecutando A*...", flush=True)
+    print("\n[2/3] Ejecutando DFS + Backtracking + MRV...", flush=True)
     t0 = time.time()
-    arbol = ArbolBuscadorAStar(
+    arbol = ArbolBuscadorDFS(
         estado_inicial,
         max_nodos=args.max_nodos,
         max_tiempo=args.max_tiempo,
@@ -705,7 +658,7 @@ def main():
     if not ruta:
         print("\n[INFO] El estado inicial ya era la solucion.", flush=True)
 
-    beff = ArbolBuscadorAStar._factor_ramificacion_efectivo(
+    beff = ArbolBuscadorDFS._factor_ramificacion_efectivo(
         len(ruta), arbol.nodos_cerrados
     ) if ruta else 0.0
 
@@ -713,12 +666,15 @@ def main():
         "abiertos"  : arbol.nodos_abiertos,
         "cerrados"  : arbol.nodos_cerrados,
         "backtracks": arbol.backtracks,
+        "prof_max"  : arbol.profundidad_max_alcanzada,
         "tiempo"    : f"{elapsed:.1f}",
         "beff"      : f"{beff:.4f}",
     }
 
     print(f"\n  Ruta encontrada: {len(ruta)} pasos", flush=True)
     print(f"  Nodos cerrados : {arbol.nodos_cerrados:,}", flush=True)
+    print(f"  Backtracks     : {arbol.backtracks:,}", flush=True)
+    print(f"  Profundidad max: {arbol.profundidad_max_alcanzada}", flush=True)
     print(f"  b* efectivo    : {beff:.4f}", flush=True)
 
     print("\n[3/3] Abriendo visualizador (pygame)...\n", flush=True)

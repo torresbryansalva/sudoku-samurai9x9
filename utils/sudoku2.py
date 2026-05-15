@@ -1,8 +1,22 @@
+"""
+sudoku2.py — Sudoku 9 Tableros resuelto con DFS + backtracking + MRV.
+
+Misma topologia (CONEXIONES, Estado, generador) que sudoku.py, pero el
+solver no usa heap ni heuristica con f=g+h: hace busqueda en profundidad
+iterativa, muta el estado in-place, deshace al hacer backtrack y elige
+la celda mas restringida en cada paso (MRV con forward checking).
+
+Ventajas vs A*:
+  - Memoria O(profundidad), no O(nodos_cerrados).
+  - Sin copia de estado por hijo: aplicar + deshacer es O(1) amortizado.
+  - Mismas guardas de tiempo / nodos / profundidad.
+"""
+
 import copy
-import heapq
 import random
 import sys
 import time
+
 
 # =========================================================
 # 0. MAPA DE SOLAPAMIENTOS (CONEXIONES ENTRE TABLEROS)
@@ -20,24 +34,21 @@ def agregar_conexion(t1, f1, c1, t2, f2, c2):
     CONEXIONES[(t2, f2, c2)].append((t1, f1, c1))
 
 
-# Tablero central (0) con internos (1,2,3,4)
-# e internos con externos (5,6,7,8)
 for i in range(3):
     for j in range(3):
-        agregar_conexion(0, i,     j,     1, i+6, j+6)   # 0 ↔ 1
-        agregar_conexion(0, i,     j+6,   2, i+6, j  )   # 0 ↔ 2
-        agregar_conexion(0, i+6,   j,     3, i,   j+6)   # 0 ↔ 3
-        agregar_conexion(0, i+6,   j+6,   4, i,   j  )   # 0 ↔ 4
-        agregar_conexion(1, i,     j,     5, i+6, j+6)   # 1 ↔ 5
-        agregar_conexion(2, i,     j+6,   6, i+6, j  )   # 2 ↔ 6
-        agregar_conexion(3, i+6,   j,     7, i,   j+6)   # 3 ↔ 7
-        agregar_conexion(4, i+6,   j+6,   8, i,   j  )   # 4 ↔ 8
+        agregar_conexion(0, i,     j,     1, i+6, j+6)
+        agregar_conexion(0, i,     j+6,   2, i+6, j  )
+        agregar_conexion(0, i+6,   j,     3, i,   j+6)
+        agregar_conexion(0, i+6,   j+6,   4, i,   j  )
+        agregar_conexion(1, i,     j,     5, i+6, j+6)
+        agregar_conexion(2, i,     j+6,   6, i+6, j  )
+        agregar_conexion(3, i+6,   j,     7, i,   j+6)
+        agregar_conexion(4, i+6,   j+6,   8, i,   j  )
 
 
-# Conjunto de celdas "principales": una celda por grupo de equivalencia
-# espejo. Cada movimiento llena exactamente UN grupo, así que contar sólo
-# principales vacías da una heurística admisible (h ≤ movimientos restantes).
-# La elección "menor tupla lexicográfica" es arbitraria pero estable.
+# Celdas representantes (la "menor" de cada grupo espejo). DFS no usa
+# esto como heuristica, pero se mantiene por compatibilidad con utilidades
+# y para que _vacias_principales tenga el mismo significado que en sudoku.py.
 ES_PRINCIPAL = set()
 for _z in range(9):
     for _x in range(9):
@@ -48,9 +59,9 @@ for _z in range(9):
                 ES_PRINCIPAL.add(_cell)
 
 
-# Tabla Zobrist precomputada: hash incremental por (z,x,y,valor).
-# El hash de un Estado es el XOR de ZOBRIST[z][x][y][valor] de cada celda
-# no vacía. Permite actualizar el hash en O(1) por movimiento.
+# Tabla Zobrist. DFS no la usa para cierre (no hay set de visitados:
+# el grafo de busqueda es un arbol), pero la dejamos para que Estado
+# sea intercambiable con el de sudoku.py.
 _zob_rng = random.Random(0xC0FFEE_BEEF)
 _ZOBRIST = [
     [
@@ -65,21 +76,10 @@ _ZOBRIST = [
 
 
 # =========================================================
-# 1. ESTADO
+# 1. ESTADO  (igual que sudoku.py + deshacer_movimiento)
 # =========================================================
 
 class Estado:
-    """
-    Representa la configuración completa de los 9 tableros 9x9.
-    grid[z][x][y]: tablero z, fila x, columna y.
-
-    Mantiene incrementalmente para validación O(1):
-      filas[z][x]       : set de valores ya colocados en la fila x del tab z
-      cols[z][y]        : set de valores ya colocados en la columna y del tab z
-      cajas[z][bx][by]  : set de valores ya colocados en la caja 3x3
-      _vacias           : nº de celdas vacías (== heurística A*)
-      _hash             : hash Zobrist incremental
-    """
 
     __slots__ = ("grid", "filas", "cols", "cajas",
                  "_vacias", "_vacias_principales", "_hash")
@@ -93,7 +93,6 @@ class Estado:
                 for _ in range(9)
             ]
 
-        # Construir índices incrementales escaneando la grilla una sola vez.
         self.filas = [[set() for _ in range(9)] for _ in range(9)]
         self.cols  = [[set() for _ in range(9)] for _ in range(9)]
         self.cajas = [
@@ -120,11 +119,6 @@ class Estado:
                         self.cajas[z][x // 3][y // 3].add(v)
                         self._hash ^= _ZOBRIST[z][x][y][v]
 
-    # --------------------------------------------------
-    # COPIA RÁPIDA  (reemplaza copy.deepcopy(grid) + Estado(grid))
-    # Evita reconstruir índices desde cero: clona directamente.
-    # --------------------------------------------------
-
     def copia(self):
         nuevo = Estado.__new__(Estado)
         nuevo.grid = [
@@ -149,20 +143,26 @@ class Estado:
         return nuevo
 
     # --------------------------------------------------
-    # APLICAR MOVIMIENTO  (operador)
+    # APLICAR / DESHACER
     # --------------------------------------------------
 
     def aplicar_movimiento(self, z, x, y, valor):
-        """Coloca 'valor' en (z,x,y) y propaga a espejos. Mantiene índices."""
         self._poner(z, x, y, valor)
         conex = CONEXIONES.get((z, x, y))
         if conex:
             for (ze, xe, ye) in conex:
                 self._poner(ze, xe, ye, valor)
 
+    def deshacer_movimiento(self, z, x, y, valor):
+        """Inverso exacto de aplicar_movimiento. Asume que el ultimo
+        cambio en (z,x,y) y sus espejos fue precisamente 'valor'."""
+        self._quitar(z, x, y, valor)
+        conex = CONEXIONES.get((z, x, y))
+        if conex:
+            for (ze, xe, ye) in conex:
+                self._quitar(ze, xe, ye, valor)
+
     def _poner(self, z, x, y, valor):
-        """Mutador interno: coloca 'valor' (1..9) en (z,x,y) y actualiza
-        sets, hash y contador de vacías. Asume valor != 0; A* nunca limpia."""
         actual = self.grid[z][x][y]
         if actual == valor:
             return
@@ -181,10 +181,21 @@ class Estado:
         self.cajas[z][x // 3][y // 3].add(valor)
         self._hash ^= _ZOBRIST[z][x][y][valor]
 
+    def _quitar(self, z, x, y, valor):
+        """Saca 'valor' de (z,x,y) dejando la celda vacia (0)."""
+        if self.grid[z][x][y] != valor:
+            return
+        self.filas[z][x].discard(valor)
+        self.cols[z][y].discard(valor)
+        self.cajas[z][x // 3][y // 3].discard(valor)
+        self._hash ^= _ZOBRIST[z][x][y][valor]
+        self.grid[z][x][y] = 0
+        self._vacias += 1
+        if (z, x, y) in ES_PRINCIPAL:
+            self._vacias_principales += 1
+
     # --------------------------------------------------
-    # VALIDACIÓN — O(1) gracias a los sets.
-    # Precondición: (z,x,y) está vacía. La búsqueda sólo
-    # llama a esto sobre celdas vacías (ver MRV y expandir).
+    # VALIDACION / META / MRV / CONSISTENCIA  (identico a sudoku.py)
     # --------------------------------------------------
 
     def es_movimiento_valido(self, z, x, y, valor):
@@ -204,10 +215,6 @@ class Estado:
                 if valor in self.cajas[ze][xe // 3][ye // 3]:
                     return False
         return True
-
-    # --------------------------------------------------
-    # MRV – celda más restringida (con early-exit)
-    # --------------------------------------------------
 
     def obtener_celda_mas_restringida(self):
         min_op = 10
@@ -245,45 +252,23 @@ class Estado:
                             if not ok:
                                 continue
                         posibles.append(v)
-                        # poda: si ya iguala el mejor, no puede mejorarlo
                         if len(posibles) >= min_op:
                             break
 
                     n = len(posibles)
                     if n == 0:
-                        # FORWARD CHECKING: cualquier celda vacía sin
-                        # opciones convierte este estado en dead-end.
-                        # Cortar de inmediato para que A* haga backtrack.
                         return (z, x, y), []
                     if n < min_op:
                         min_op = n
                         mejor = (z, x, y)
                         mejores_vals = posibles
-                        # NO cortar en n==1: hay que terminar de escanear
-                        # para detectar posibles dead-ends (n==0) en otras
-                        # celdas. Saltarse esto pierde el forward checking.
         return mejor, mejores_vals
-
-    # --------------------------------------------------
-    # PRUEBA DE META  (O(1) con _vacias incremental)
-    # --------------------------------------------------
 
     def esta_resuelto(self):
         return self._vacias == 0
 
-    # --------------------------------------------------
-    # HASH para estados visitados  (O(1) — Zobrist incremental)
-    # --------------------------------------------------
-
     def hash(self):
         return self._hash
-
-    # --------------------------------------------------
-    # CONSISTENCIA INICIAL
-    # No usa es_movimiento_valido (que asume celda vacía):
-    # detecta duplicados en filas/cols/cajas y desacuerdo
-    # entre celdas espejo.
-    # --------------------------------------------------
 
     def es_consistente(self):
         for z in range(9):
@@ -318,16 +303,10 @@ class Estado:
 
 
 # =========================================================
-# 2. GENERADOR DE ESTADO INICIAL ALEATORIO
+# 2. GENERADOR DE ESTADO INICIAL ALEATORIO (identico a sudoku.py)
 # =========================================================
 
 def generar_estado_aleatorio(porcentaje_relleno=0.15, semilla=None):
-    """
-    Genera un estado inicial aleatorio con ~porcentaje_relleno de celdas
-    prellenadas de forma válida.
-
-    Retorna (Estado, fijo) donde 'fijo' es el conjunto de celdas fijas.
-    """
     if semilla is not None:
         random.seed(semilla)
 
@@ -382,241 +361,171 @@ def generar_estado_aleatorio(porcentaje_relleno=0.15, semilla=None):
 
 
 # =========================================================
-# 3. NODO A*
+# 3. BUSCADOR DFS + BACKTRACKING + MRV
 # =========================================================
 
-class Nodo:
+class ArbolBuscadorDFS:
     """
-    Contiene un estado + metadatos del árbol de búsqueda.
-    g  = nº de movimientos aplicados desde el inicio
-    h  = nº de grupos espejo aún vacíos (admisible: cada movimiento
-         llena exactamente 1 grupo, así que h ≤ movimientos restantes)
-    f  = g + h
-    operador = (z, x, y, valor) que generó este nodo
-    """
+    DFS iterativo con backtracking y MRV + forward checking.
 
-    __slots__ = ("estado", "padre", "g", "operador", "h", "f")
+    No usa heap, no usa set de visitados (el espacio de busqueda es un
+    arbol: cada movimiento es irreversible mientras no se haga backtrack).
+    El estado se muta in-place y se deshace al retroceder.
 
-    def __init__(self, estado, padre=None, g=0, operador=None):
-        self.estado    = estado
-        self.padre     = padre
-        self.g         = g
-        self.operador  = operador
-        # h cuenta grupos de equivalencia vacíos (celdas principales sin
-        # valor), no celdas absolutas: como un movimiento llena 1 celda +
-        # sus espejos, contar celdas crudas sobreestimaba y rompía la
-        # admisibilidad. Está mantenido incrementalmente en Estado (O(1)).
-        self.h         = estado._vacias_principales
-        self.f         = self.g + self.h
+    La pila guarda, por nivel:  (celda, valor_actual, alternativas_pendientes)
+      - Al hacer backtrack: pop, deshacer 'valor_actual', si quedan
+        alternativas probar la siguiente; si no, seguir subiendo.
 
-    def heuristica(self):
-        return self.estado._vacias_principales
-
-    def __lt__(self, other):
-        # Orden A* clásico (f = g + h) con tie-break por profundidad.
-        # Cuando f empata, preferir mayor g hace que A* se sumerja en la
-        # rama actual antes de explorar alternativas equivalentes en costo.
-        # Es una técnica de tie-break estándar que NO rompe la optimalidad
-        # de A* respecto al costo del camino.
-        if self.f != other.f:
-            return self.f < other.f
-        return self.g > other.g
-
-    # --------------------------------------------------
-    # EXPANDIR
-    # --------------------------------------------------
-
-    def expandir(self):
-        if self.estado.esta_resuelto():
-            return "SOLUCION"
-
-        celda, opciones = self.estado.obtener_celda_mas_restringida()
-        if celda is None or len(opciones) == 0:
-            return []
-
-        z, x, y = celda
-        hijos = []
-        for valor in opciones:
-            # copia rápida (O(729) listas + 243 sets pequeños)
-            # mucho más barata que copy.deepcopy.
-            nuevo_estado = self.estado.copia()
-            nuevo_estado.aplicar_movimiento(z, x, y, valor)
-            hijo = Nodo(
-                nuevo_estado,
-                padre=self,
-                g=self.g + 1,
-                operador=(z, x, y, valor),
-            )
-            hijos.append(hijo)
-        return hijos
-
-
-# =========================================================
-# 4. ÁRBOL A*
-# =========================================================
-
-class ArbolBuscadorAStar:
-    """
-    Búsqueda A* para el sudoku 9-tableros.
-
-    - Heap de prioridad ordenado por f = g + h.
-    - Heurística h = nº de celdas vacías (admisible, O(1) por estar
-      mantenida incrementalmente en Estado).
-    - Cierre por hash Zobrist incremental.
-    - Forward checking implícito en MRV: si alguna celda vacía tiene 0
-      valores válidos, no se generan hijos (poda inmediata).
-    - Tie-break del heap por mayor g (profundidad) cuando f empata —
-      truco estándar que NO afecta la optimalidad del costo de camino.
-    - Si se alcanza max_nodos / max_tiempo, devuelve el mejor parcial
-      visto (nodo con menor h en la frontera).
+    Stats expuestas para compatibilidad con el visualizador:
+      nodos_cerrados, nodos_abiertos (= |pila|), backtracks.
     """
 
     def __init__(self, estado_inicial,
                  max_nodos=2_000_000,
                  max_profundidad=730,
                  max_tiempo=300):
-        self.raiz            = Nodo(estado_inicial)
-        self.nodos_abiertos  = 0
+        self.estado_inicial  = estado_inicial
+        self.estado          = estado_inicial.copia()
         self.nodos_cerrados  = 0
+        self.nodos_abiertos  = 0
         self.backtracks      = 0
         self.max_nodos       = max_nodos
         self.max_profundidad = max_profundidad
         self.max_tiempo      = max_tiempo
-        self.visitados       = set()
+        self.profundidad_max_alcanzada = 0
 
     # --------------------------------------------------
 
     def buscar(self):
-        frontera = []
-        heapq.heappush(frontera, self.raiz)
-        self.nodos_abiertos = 1
+        pila = []
+        # Mejor parcial: lista de (celda, valor) que reproduce el estado
+        # mas lleno alcanzado. Se guarda como snapshot al mejorar _vacias.
+        mejor_vacias = self.estado._vacias
+        mejor_ops    = []
+
         t_inicio = time.time()
         t_ultimo_log = t_inicio
         LOG_INTERVALO = 2.0
-        # Mejor nodo cerrado visto hasta ahora (menor h). Lo trackeamos
-        # explícitamente porque al cerrar un nodo sólo guardamos su hash,
-        # y al alcanzar un límite necesitamos poder devolverlo: el mejor
-        # del frontier suele ser peor que el mejor ya expandido.
-        mejor_cerrado = self.raiz
 
-        while frontera:
+        while True:
             elapsed = time.time() - t_inicio
 
             if elapsed >= self.max_tiempo:
                 print(f"\n[LIMITE] Tiempo maximo alcanzado ({self.max_tiempo}s)",
                       flush=True)
-                mejor = self._mejor_parcial(frontera, mejor_cerrado)
-                return mejor.estado, self._ruta(mejor), False
+                return self._reconstruir(mejor_ops, False)
 
-            if self.nodos_cerrados + self.nodos_abiertos >= self.max_nodos:
+            if self.nodos_cerrados >= self.max_nodos:
                 print(f"\n[LIMITE] Nodos maximos alcanzados ({self.max_nodos})",
                       flush=True)
-                mejor = self._mejor_parcial(frontera, mejor_cerrado)
-                return mejor.estado, self._ruta(mejor), False
+                return self._reconstruir(mejor_ops, False)
 
-            nodo_actual = heapq.heappop(frontera)
-            self.nodos_abiertos -= 1
-
-            if nodo_actual.g > self.max_profundidad:
-                continue
-
-            estado_hash = nodo_actual.estado.hash()
-            if estado_hash in self.visitados:
-                continue
-            self.visitados.add(estado_hash)
-            self.nodos_cerrados += 1
-
-            if nodo_actual.estado._vacias < mejor_cerrado.estado._vacias:
-                mejor_cerrado = nodo_actual
-
-            # log periódico
             ahora = time.time()
             if ahora - t_ultimo_log >= LOG_INTERVALO:
-                self._log(elapsed, nodo_actual)
+                self._log(elapsed, len(pila))
                 t_ultimo_log = ahora
 
-            resultado = nodo_actual.expandir()
-
-            if resultado == "SOLUCION":
+            if self.estado.esta_resuelto():
                 elapsed = time.time() - t_inicio
-                ruta = self._ruta(nodo_actual)
+                ops = [(c, v) for (c, v, _) in pila]
+                estado_final, ruta, _ = self._reconstruir(ops, True)
                 print("\n" + "=" * 50, flush=True)
                 print("  SOLUCION ENCONTRADA", flush=True)
                 print("=" * 50, flush=True)
-                print(f"  Nodos abiertos  : {self.nodos_abiertos}", flush=True)
                 print(f"  Nodos cerrados  : {self.nodos_cerrados:,}", flush=True)
                 print(f"  Backtracks      : {self.backtracks:,}", flush=True)
-                print(f"  Profundidad     : {nodo_actual.g}", flush=True)
+                print(f"  Profundidad     : {len(pila)}", flush=True)
+                print(f"  Profundidad max : {self.profundidad_max_alcanzada}",
+                      flush=True)
                 print(f"  Tiempo          : {elapsed:.2f}s", flush=True)
                 print(f"  Pasos de ruta   : {len(ruta)}", flush=True)
-                beff = self._factor_ramificacion_efectivo(
-                    nodo_actual.g, self.nodos_cerrados)
-                print(f"  b* efectivo     : {beff:.4f}", flush=True)
-                return nodo_actual.estado, ruta, True
+                return estado_final, ruta, True
 
-            if not resultado:
-                # poda por forward checking (MRV detectó celda con 0 opciones)
+            celda, opciones = self.estado.obtener_celda_mas_restringida()
+
+            if celda is None:
+                # No hay celdas vacias pero _vacias != 0: imposible si los
+                # indices estan bien. Defensa por si acaso.
+                return self._reconstruir(mejor_ops, False)
+
+            if not opciones:
+                # Dead-end por forward checking: backtrack
+                if not self._backtrack(pila):
+                    print("\nNO EXISTE SOLUCION", flush=True)
+                    return None, [], False
                 self.backtracks += 1
                 continue
 
-            for hijo in resultado:
-                if hijo.estado.hash() not in self.visitados:
-                    heapq.heappush(frontera, hijo)
-                    self.nodos_abiertos += 1
+            if len(pila) >= self.max_profundidad:
+                if not self._backtrack(pila):
+                    return self._reconstruir(mejor_ops, False)
+                self.backtracks += 1
+                continue
 
-        print("\nNO EXISTE SOLUCION", flush=True)
-        return None, [], False
+            v = opciones[0]
+            self.estado.aplicar_movimiento(celda[0], celda[1], celda[2], v)
+            pila.append((celda, v, opciones[1:]))
+            self.nodos_cerrados += 1
+            self.nodos_abiertos = len(pila)
+
+            if len(pila) > self.profundidad_max_alcanzada:
+                self.profundidad_max_alcanzada = len(pila)
+
+            if self.estado._vacias < mejor_vacias:
+                mejor_vacias = self.estado._vacias
+                mejor_ops = [(c, vv) for (c, vv, _) in pila]
 
     # --------------------------------------------------
-    # Reconstrucción de la ruta desde el nodo solución
+
+    def _backtrack(self, pila):
+        """Pop hasta encontrar un nivel con alternativas. Devuelve False
+        si la pila se vacia (espacio de busqueda agotado)."""
+        while pila:
+            celda, v, alternativas = pila.pop()
+            self.estado.deshacer_movimiento(celda[0], celda[1], celda[2], v)
+            if alternativas:
+                v2 = alternativas[0]
+                self.estado.aplicar_movimiento(celda[0], celda[1], celda[2], v2)
+                pila.append((celda, v2, alternativas[1:]))
+                self.nodos_cerrados += 1
+                self.nodos_abiertos = len(pila)
+                return True
+        self.nodos_abiertos = 0
+        return False
+
     # --------------------------------------------------
 
-    def _mejor_parcial(self, frontera, mejor_cerrado):
-        # Comparamos por celdas absolutas vacías (no por h) para reportar
-        # el estado más completo realmente alcanzado, sea expandido o no.
-        mejor = mejor_cerrado
-        for n in frontera:
-            if n.estado._vacias < mejor.estado._vacias:
-                mejor = n
-        return mejor
-
-    def _ruta(self, nodo):
-        pasos = []
-        actual = nodo
-        while actual.padre is not None:
-            pasos.append({
-                "operador"       : actual.operador,
-                "estado_despues" : actual.estado,
-                "estado_antes"   : actual.padre.estado,
-                "g"              : actual.g,
+    def _reconstruir(self, ops, es_completa):
+        """Aplica ops sobre una copia del estado inicial para devolver
+        (estado, ruta) coherentes con el formato del visualizador."""
+        estado = self.estado_inicial.copia()
+        ruta = []
+        for i, (celda, v) in enumerate(ops):
+            estado.aplicar_movimiento(celda[0], celda[1], celda[2], v)
+            ruta.append({
+                "operador"       : (celda[0], celda[1], celda[2], v),
+                "estado_despues" : None,
+                "estado_antes"   : None,
+                "g"              : i + 1,
             })
-            actual = actual.padre
-        pasos.reverse()
-        return pasos
+        return estado, ruta, es_completa
 
-    def _log(self, elapsed, nodo):
-        # h ahora cuenta grupos espejo, no celdas: para el % real usamos
-        # _vacias del estado, que sigue siendo el total absoluto de 729.
-        vacias = nodo.estado._vacias
+    # --------------------------------------------------
+
+    def _log(self, elapsed, profundidad):
+        vacias = self.estado._vacias
         llenadas = 729 - vacias
         pct = llenadas / 729 * 100
         beff = self._factor_ramificacion_efectivo(
-            nodo.g, self.nodos_cerrados)
-        if nodo.operador:
-            tz, tx, ty, tv = nodo.operador
-            op_str = f"T{tz} fila={tx} col={ty} val={tv}"
-        else:
-            op_str = "raiz"
+            profundidad, self.nodos_cerrados)
         print(
             f"  [{elapsed:6.1f}s]"
             f"  nodos={self.nodos_cerrados:>7,}"
-            f"  abier={self.nodos_abiertos:>6,}"
-            f"  prof={nodo.g:>4}"
-            f"  f={nodo.f:>4} g={nodo.g:>4} h={nodo.h:>4}"
+            f"  pila={profundidad:>4}"
+            f"  prof_max={self.profundidad_max_alcanzada:>4}"
             f"  llenas={llenadas:>3}/729 ({pct:4.1f}%)"
             f"  backt={self.backtracks:>5,}"
-            f"  b*={beff:.4f}"
-            f"  op=[{op_str}]",
+            f"  b*={beff:.4f}",
             flush=True,
         )
 
@@ -628,7 +537,7 @@ class ArbolBuscadorAStar:
 
 
 # =========================================================
-# 5. IMPRESIÓN
+# 4. IMPRESION
 # =========================================================
 
 def imprimir_tablero(tablero):
@@ -654,34 +563,36 @@ def imprimir_estado(estado, titulo="ESTADO"):
 
 def imprimir_ruta(ruta, max_pasos=10):
     print(f"\n{'='*50}", flush=True)
-    print(f"  RUTA DE SOLUCIÓN (primeros {min(max_pasos, len(ruta))} pasos)", flush=True)
+    print(f"  RUTA DE SOLUCION (primeros {min(max_pasos, len(ruta))} pasos)",
+          flush=True)
     print(f"{'='*50}", flush=True)
     for i, paso in enumerate(ruta[:max_pasos]):
         z, x, y, v = paso["operador"]
         print(f"  Paso {i+1:3d} | g={paso['g']:3d} | "
-              f"Tablero {z}, fila {x}, col {y}  →  valor {v}", flush=True)
+              f"Tablero {z}, fila {x}, col {y}  ->  valor {v}", flush=True)
     if len(ruta) > max_pasos:
-        print(f"  ... ({len(ruta) - max_pasos} pasos más)", flush=True)
+        print(f"  ... ({len(ruta) - max_pasos} pasos mas)", flush=True)
 
 
 # =========================================================
-# 6. EJECUCIÓN
+# 5. EJECUCION DIRECTA
 # =========================================================
 
 if __name__ == "__main__":
 
     PORCENTAJE  = 0.15
     SEMILLA     = 42
-    MAX_NODOS   = 200_000
+    MAX_NODOS   = 2_000_000
     MAX_TIEMPO  = 180
 
     print("\n" + "="*50, flush=True)
-    print("  SUDOKU 9-TABLEROS  –  Búsqueda A*", flush=True)
+    print("  SUDOKU 9-TABLEROS  -  Busqueda DFS + Backtracking + MRV",
+          flush=True)
     print("="*50, flush=True)
     print(f"  Porcentaje relleno inicial : {PORCENTAJE*100:.0f}%", flush=True)
     print(f"  Semilla aleatoria          : {SEMILLA}", flush=True)
-    print(f"  Límite nodos               : {MAX_NODOS:,}", flush=True)
-    print(f"  Límite tiempo              : {MAX_TIEMPO}s", flush=True)
+    print(f"  Limite nodos               : {MAX_NODOS:,}", flush=True)
+    print(f"  Limite tiempo              : {MAX_TIEMPO}s", flush=True)
 
     estado_inicial, celdas_fijas = generar_estado_aleatorio(
         porcentaje_relleno=PORCENTAJE,
@@ -689,28 +600,31 @@ if __name__ == "__main__":
     )
 
     if not estado_inicial.es_consistente():
-        print("\n[ERROR] El estado inicial generado es INCONSISTENTE.", flush=True)
+        print("\n[ERROR] El estado inicial generado es INCONSISTENTE.",
+              flush=True)
         sys.exit(1)
 
     celdas_prellenadas = sum(
         1 for z in range(9) for x in range(9) for y in range(9)
         if estado_inicial.grid[z][x][y] != 0
     )
-    print(f"\n  Celdas prellenadas         : {celdas_prellenadas} / 729", flush=True)
+    print(f"\n  Celdas prellenadas         : {celdas_prellenadas} / 729",
+          flush=True)
     imprimir_estado(estado_inicial, "ESTADO INICIAL")
 
-    print("\n\nINICIANDO A*...\n", flush=True)
-    arbol = ArbolBuscadorAStar(
+    print("\n\nINICIANDO DFS...\n", flush=True)
+    arbol = ArbolBuscadorDFS(
         estado_inicial,
         max_nodos=MAX_NODOS,
         max_tiempo=MAX_TIEMPO
     )
-    solucion, ruta, es_optima = arbol.buscar()
+    solucion, ruta, es_completa = arbol.buscar()
 
     if solucion:
         imprimir_estado(solucion, "ESTADO FINAL")
         imprimir_ruta(ruta)
-        if not es_optima:
-            print("\n[INFO] Solución parcial: se alcanzó un límite de búsqueda.", flush=True)
+        if not es_completa:
+            print("\n[INFO] Solucion parcial: se alcanzo un limite.",
+                  flush=True)
     else:
-        print("\nNo se encontró solución.", flush=True)
+        print("\nNo se encontro solucion.", flush=True)
